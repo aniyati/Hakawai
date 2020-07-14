@@ -232,7 +232,7 @@ typedef NS_ENUM(NSInteger, HKWMentionsCreationAction) {
             else {
                 [self.stringBuffer appendString:string];
                 // Move the state to 'pending request'. This will cause another request to be fired as soon as the
-                //  timer expires.
+                // timer expires.
                 self.networkState = HKWMentionsCreationNetworkStatePendingRequestAfterCooldown;
             }
             break;
@@ -245,11 +245,11 @@ typedef NS_ENUM(NSInteger, HKWMentionsCreationAction) {
 
     // Whether or not the buffer is empty (no characters to search upon).
     // Note that, if the mention is an explicit mention (use control character), user can back out to beginning. But if
-    //  the mention is implicit, backing out to the beginning will cancel mentions creation.
+    // the mention is implicit, backing out to the beginning will cancel mentions creation.
     BOOL bufferAlreadyEmpty = ([self.stringBuffer length] == 0
                                || (self.searchType == HKWMentionsSearchTypeImplicit
                                    && [self.stringBuffer length] == 1));
-    
+
     // The range of the buffer string that corresponds to the delete string (if the delete string is valid)
     NSRange toDeleteRange = NSMakeRange([self.stringBuffer length] - [deleteString length], [deleteString length]);
 
@@ -270,12 +270,33 @@ typedef NS_ENUM(NSInteger, HKWMentionsCreationAction) {
 
     __strong __auto_type delegate = self.delegate;
 
+    /**
+     When mentions was originally triggered because the whitespace between a control character and a word was deleted,
+     the cursor is next to the control character (like "@|John", where '|' represents the cursor-state). If the user then deletes the control character,
+     the string buffer will not be empty (it will have "John" in it), but mentions has to stop, because control character is deleted.
+     We use the isControlCharacterDeleted flag to decide what to do in this case of control character deletion.
+     */
+    BOOL isControlCharacterDeleted = NO;
+    if (deleteString.length == 1
+        && [deleteString containsString:[NSString stringWithFormat:@"%C", self.explicitSearchControlCharacter]]
+        && self.stringBuffer.length > 0
+        && [self.stringBuffer characterAtIndex:self.stringBuffer.length - 1] != self.explicitSearchControlCharacter) {
+        isControlCharacterDeleted = YES;
+    }
+
     // Switch on the overall state
     switch (self.state) {
         case HKWMentionsCreationStateQuiescent:
             // User not creating a mention right now
             return;
         case HKWMentionsCreationStateCreatingMention:
+            if (isControlCharacterDeleted) {
+                // When user deletes control character during mention creation state, then end mention creation.
+                self.state = HKWMentionsCreationStateQuiescent;
+                [delegate cancelMentionFromStartingLocation:self.startingLocation];
+                return;
+            }
+
             if (deleteStringIsTransient) {
                 // Delete was typed, but for some sort of transient state (e.g. keyboard suggestions); don't do anything
                 return;
@@ -365,7 +386,9 @@ typedef NS_ENUM(NSInteger, HKWMentionsCreationAction) {
                    usingControlCharacter:(BOOL)usingControlCharacter
                         controlCharacter:(unichar)character
                                 location:(NSUInteger)location {
-    if (self.networkState != HKWMentionsCreationNetworkStateQuiescent) {
+    // Because we are supporting insertion of strings (including valid mention-strings) via non-english keyboards,
+    // we should be able to start a new mention even without being in a quiescent state
+    if (!HKWTextView.enableKoreanMentionsFix && self.networkState != HKWMentionsCreationNetworkStateQuiescent) {
         return;
     }
     self.state = HKWMentionsCreationStateCreatingMention;
@@ -666,7 +689,7 @@ typedef NS_ENUM(NSInteger, HKWMentionsCreationAction) {
     if (sequence != self.sequenceNumber) {
         // This is a response to an out-of-date request.
         HKWLOG(@"  DEBUG: out-of-date request (seq: %lu, current: %lu)",
-                (unsigned long)sequence, (unsigned long)self.sequenceNumber);
+               (unsigned long)sequence, (unsigned long)self.sequenceNumber);
         return;
     }
     if (self.state == HKWMentionsCreationStateQuiescent && self.searchType != HKWMentionsSearchTypeInitial) {
@@ -921,12 +944,19 @@ typedef NS_ENUM(NSInteger, HKWMentionsCreationAction) {
     // Create the mention
     id<HKWMentionsEntityProtocol> entity = self.entityArray[(NSUInteger)indexPath.row];
     HKWMentionsAttribute *mention = [HKWMentionsAttribute mentionWithText:[entity entityName]
-                                                                 identifier:[entity entityId]];
+                                                               identifier:[entity entityId]];
     mention.metadata = [entity entityMetadata];
     self.state = HKWMentionsCreationStateQuiescent;
     __strong __auto_type delegate = self.delegate;
-    [delegate createMention:mention startingLocation:self.startingLocation];
-    [delegate selected:entity atIndexPath:indexPath];
+
+    if (HKWTextView.enableMentionSelectFix) {
+        // Delegate selected callback should fire prior to creationMention which triggers textView callbacks
+        [delegate selected:entity atIndexPath:indexPath];
+        [delegate createMention:mention startingLocation:self.startingLocation];
+    } else {
+        [delegate createMention:mention startingLocation:self.startingLocation];
+        [delegate selected:entity atIndexPath:indexPath];
+    }
 }
 
 
@@ -999,7 +1029,7 @@ typedef NS_ENUM(NSInteger, HKWMentionsCreationAction) {
         return;
     }
     HKW_STATE_LOG(@"  Creation SM Network State Transition: %@ --> %@",
-                   nameForNetworkState(_networkState), nameForNetworkState(networkState));
+                  nameForNetworkState(_networkState), nameForNetworkState(networkState));
     _networkState = networkState;
     if (_networkState == HKWMentionsCreationNetworkStateQuiescent) {
         // Reset the cooldown timer
@@ -1012,7 +1042,7 @@ typedef NS_ENUM(NSInteger, HKWMentionsCreationAction) {
         return;
     }
     HKW_STATE_LOG(@"  Creation SM Results State Transition: %@ --> %@",
-                   nameForResultsState(_resultsState), nameForResultsState(resultsState));
+                  nameForResultsState(_resultsState), nameForResultsState(resultsState));
     _resultsState = resultsState;
 }
 
